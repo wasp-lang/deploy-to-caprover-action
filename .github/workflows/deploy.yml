@@ -1,0 +1,124 @@
+name: "Deploy Wasp to Caprover"
+
+on:
+  workflow_call:
+    secrets:
+      CAPROVER_SERVER:
+        description: "Caprover server URL"
+        required: true
+      SERVER_APP_NAME:
+        description: "Caprover server app name"
+        required: true
+      SERVER_APP_TOKEN:
+        description: "Caprover server app token"
+        required: true
+      CLIENT_APP_NAME:
+        description: "Caprover client app name"
+        required: true
+      CLIENT_APP_TOKEN:
+        description: "Caprover client app token"
+        required: true
+      SERVER_APP_URL:
+        description: "URL of the server app"
+        required: true
+      DOCKER_REGISTRY:
+        description: "Docker registry"
+        required: true
+      DOCKER_REGISTRY_USERNAME:
+        description: "Docker registry username"
+        required: true
+      DOCKER_REGISTRY_PASSWORD:
+        description: "Docker registry password"
+        required: true
+
+env:
+  WASP_TELEMETRY_DISABLED: 1
+
+jobs:
+  build-and-push-images:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ${{ secrets.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+      - name: (server) Extract metadata for Docker
+        id: meta-server
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ${{ secrets.DOCKER_REGISTRY }}/${{ secrets.DOCKER_REGISTRY_USERNAME }}/${{ secrets.SERVER_APP_NAME }}
+
+      - name: (client) Extract metadata for Docker
+        id: meta-client
+        uses: docker/metadata-action@9ec57ed1fcdbf14dcef7dfbe97b2010124a938b7
+        with:
+          images: ${{ secrets.DOCKER_REGISTRY }}/${{ secrets.DOCKER_REGISTRY_USERNAME }}/${{ secrets.CLIENT_APP_NAME }}
+
+      - name: Install Wasp
+        shell: bash
+        run: curl -sSL https://get.wasp-lang.dev/installer.sh | sh
+
+      # TODO: maybe introduce caching of the built app or npm packages https://github.com/actions/setup-node#caching-global-packages-data
+
+      - name: Build Wasp app
+        shell: bash
+        run: wasp build
+
+      - name: (client) Build
+        shell: bash
+        run: |
+          cd ./.wasp/build/web-app
+          REACT_APP_API_URL=${{ secrets.SERVER_APP_URL }} npm run build
+
+      - name: (client) Prepare the Dockerfile
+        shell: bash
+        run: |
+          cd ./.wasp/build/web-app
+          echo "FROM pierrezemb/gostatic" > Dockerfile
+          echo "CMD [\"-fallback\", \"index.html\", \"-enable-logging\"]" >> Dockerfile
+          echo "COPY ./build /srv/http" >> Dockerfile
+
+      - name: (server) Build and push Docker image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: ./.wasp/build
+          file: ./.wasp/build/Dockerfile
+          push: true
+          tags: ${{ steps.meta-server.outputs.tags }}
+          labels: ${{ steps.meta-server.outputs.labels }}
+
+      - name: (client) Build and push Docker image
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: ./.wasp/build/web-app
+          file: ./.wasp/build/web-app/Dockerfile
+          push: true
+          tags: ${{ steps.meta-client.outputs.tags }}
+          labels: ${{ steps.meta-client.outputs.labels }}
+
+      - name: (server) Deploy to Caprover
+        uses: caprover/deploy-from-github@v1.1.2
+        with:
+          server: ${{ secrets.CAPROVER_SERVER }}
+          app: ${{ secrets.SERVER_APP_NAME }}
+          token: ${{ secrets.SERVER_APP_TOKEN }}
+          image: ${{ steps.meta-server.outputs.tags }}
+
+      - name: (client) Deploy to Caprover
+        uses: caprover/deploy-from-github@v1.1.2
+        with:
+          server: ${{ secrets.CAPROVER_SERVER }}
+          app: ${{ secrets.CLIENT_APP_NAME }}
+          token: ${{ secrets.CLIENT_APP_TOKEN }}
+          image: ${{ steps.meta-client.outputs.tags }}
