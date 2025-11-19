@@ -1,3 +1,6 @@
+> [!WARNING]
+> This action is outdated and deprecated. Please follow the instructions in the latest Wasp docs: https://wasp.sh/docs/deployment/deployment-methods/self-hosted#caprover
+
 # Deploy Wasp Apps to CapRover
 
 Github Action to deploy Wasp Apps to CapRover
